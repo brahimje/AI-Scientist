@@ -51,6 +51,7 @@ AVAILABLE_LLMS = [
     "deepseek-chat",
     "deepseek-coder",
     "deepseek-reasoner",
+    "deepseek-v4-flash",
     # Google Gemini models
     "gemini-1.5-flash",
     "gemini-1.5-pro",
@@ -229,7 +230,7 @@ def get_response_from_llm(
         )
         content = response.choices[0].message.content
         new_msg_history = new_msg_history + [{"role": "assistant", "content": content}]
-    elif model in ["deepseek-chat", "deepseek-coder"]:
+    elif model in ["deepseek-chat", "deepseek-coder", "deepseek-v4-flash"]:
         new_msg_history = msg_history + [{"role": "user", "content": msg}]
         response = client.chat.completions.create(
             model=model,
@@ -329,7 +330,7 @@ def create_client(model):
     elif 'gpt' in model or "o1" in model or "o3" in model:
         print(f"Using OpenAI API with model {model}.")
         return openai.OpenAI(), model
-    elif model in ["deepseek-chat", "deepseek-reasoner", "deepseek-coder"]:
+    elif model in ["deepseek-chat", "deepseek-reasoner", "deepseek-coder", "deepseek-v4-flash"]:
         print(f"Using OpenAI API with {model}.")
         return openai.OpenAI(
             api_key=os.environ["DEEPSEEK_API_KEY"],
