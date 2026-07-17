@@ -314,7 +314,7 @@ class GPT(nn.Module):
 
 
 # --- END model.py ---
-def train(dataset="shakespeare_char", out_dir="run_0", seed_offset=0):
+def train(dataset="shakespeare_char", out_dir="run_0", seed_offset=0, init_from="scratch"):
     # -----------------------------------------------------------------------------
     # default config values designed to train a gpt2 (124M) on OpenWebText
     # data
@@ -328,34 +328,42 @@ def train(dataset="shakespeare_char", out_dir="run_0", seed_offset=0):
     eval_only = False  # if True, script exits right after the first eval
     always_save_checkpoint = False  # we expect to overfit on this small dataset, so only save when val improves
     never_save_checkpoint = True  # never save checkpoints
-    # model
-    n_layer = 6  # baby GPT model :)
-    n_head = 6
-    n_embd = 384
-    dropout = 0.2  # for pretraining 0 is good, for finetuning try 0.1+
-    bias = False  # do we use bias inside LayerNorm and Linear layers?
-    # adamw optimizer
-    learning_rate = 1e-3 if dataset == "shakespeare_char" else 5e-4
-    max_iters = 5000 if dataset == "shakespeare_char" else 100000
-    weight_decay = 1e-1
-    beta1 = 0.9
-    beta2 = 0.99  # make a bit bigger because number of tokens per iter is small
-    grad_clip = 1.0  # clip gradients at this value, or disable if == 0.0
-    # learning rate decay settings
-    decay_lr = True  # whether to decay the learning rate
-    warmup_iters = 100 if dataset == "shakespeare_char" else 200
-    lr_decay_iters = max_iters  # make equal to max_iters usually
-    min_lr = 1e-4 if dataset == "shakespeare_char" else 5e-5
-    # DDP settings
-    backend = "nccl"  # 'nccl', 'gloo', etc.
-    # system
-    device = "cuda"  # Always use CUDA
-    dtype = (
-        "bfloat16"
-        if torch.cuda.is_available() and torch.cuda.is_bf16_supported()
-        else "float16"
-    )  # 'float32', 'bfloat16', or 'float16', the latter will auto implement a GradScaler
-    compile = True  # do not torch compile the model on macbooks
+
+    # When using pretrained, use GPT-2 small architecture and fine-tune
+    if init_from == "pretrained":
+        n_layer = 12
+        n_head = 12
+        n_embd = 768
+        dropout = 0.1
+        bias = True  # GPT-2 uses bias
+        learning_rate = 3e-5  # low LR for fine-tuning
+        max_iters = 500 if dataset == "shakespeare_char" else 2000
+        weight_decay = 1e-2
+        beta1 = 0.9
+        beta2 = 0.95
+        grad_clip = 0.5
+        decay_lr = True
+        warmup_iters = 50
+        lr_decay_iters = max_iters
+        min_lr = 1e-5
+        compile = False  # skip compile for short fine-tuning
+    else:
+        n_layer = 6  # baby GPT model :)
+        n_head = 6
+        n_embd = 384
+        dropout = 0.2  # for pretraining 0 is good, for finetuning try 0.1+
+        bias = False  # do we use bias inside LayerNorm and Linear layers?
+        learning_rate = 1e-3 if dataset == "shakespeare_char" else 5e-4
+        max_iters = 5000 if dataset == "shakespeare_char" else 100000
+        weight_decay = 1e-1
+        beta1 = 0.9
+        beta2 = 0.99
+        grad_clip = 1.0
+        decay_lr = True
+        warmup_iters = 100 if dataset == "shakespeare_char" else 200
+        lr_decay_iters = max_iters
+        min_lr = 1e-4 if dataset == "shakespeare_char" else 5e-5
+        compile = True
 
     # various inits, derived attributes, I/O setup
     # if not ddp, we are running on a single gpu, and one process
@@ -441,23 +449,34 @@ def train(dataset="shakespeare_char", out_dir="run_0", seed_offset=0):
         vocab_size=None,
         dropout=dropout,
     )  # start with model_args from command line
-    # init a new model from scratch
-    print("Initializing a new model from scratch")
-    # determine the vocab size we'll use for from-scratch training
+
+    # determine the vocab size we'll use for training
     if meta_vocab_size is None:
         print(
             "defaulting to vocab_size of GPT-2 to 50304 (50257 rounded up for efficiency)"
         )
     model_args["vocab_size"] = meta_vocab_size if meta_vocab_size is not None else 50304
+
     gptconf = GPTConfig(**model_args)
-    model = GPT(gptconf)
-    # crop down the model block size if desired, using model surgery
-    if block_size < model.config.block_size:
-        model.crop_block_size(block_size)
-        model_args["block_size"] = (
-            block_size  # so that the checkpoint will have the right value
-        )
-    model.to(device)
+
+    if init_from == "pretrained":
+        print("Initializing model with pretrained GPT-2 weights (fine-tuning mode)...")
+        model = GPT(gptconf)
+        if block_size < model.config.block_size:
+            model.crop_block_size(block_size)
+            model_args["block_size"] = block_size
+        model.to(device)
+        load_pretrained_weights(model, model_args, device)
+    else:
+        print("Initializing a new model from scratch")
+        model = GPT(gptconf)
+        # crop down the model block size if desired, using model surgery
+        if block_size < model.config.block_size:
+            model.crop_block_size(block_size)
+            model_args["block_size"] = (
+                block_size  # so that the checkpoint will have the right value
+            )
+        model.to(device)
 
     # initialize a GradScaler. If enabled=False scaler is a no-op
     scaler = torch.cuda.amp.GradScaler(enabled=(dtype == "float16"))
@@ -678,8 +697,55 @@ def train(dataset="shakespeare_char", out_dir="run_0", seed_offset=0):
     return final_info, train_log_info, val_log_info
 
 
+def load_pretrained_weights(model, model_args, device):
+    """Load pretrained GPT-2 small weights from HuggingFace into a NanoGPT model.
+    Handles different vocab sizes by only loading transformer block weights.
+    """
+    try:
+        from transformers import GPT2LMHeadModel
+    except ImportError:
+        import subprocess
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "transformers"])
+        from transformers import GPT2LMHeadModel
+
+    print("Loading pretrained GPT-2 small from HuggingFace...")
+    hf_model = GPT2LMHeadModel.from_pretrained("gpt2")
+    hf_model.eval()
+    hf_state = hf_model.state_dict()
+
+    model_state = model.state_dict()
+    loaded = 0
+    skipped_shape = 0
+    skipped_missing = 0
+
+    for hf_key, hf_param in hf_state.items():
+        # Map HF key to NanoGPT key (they use the same naming convention)
+        if hf_key in model_state:
+            if hf_param.shape == model_state[hf_key].shape:
+                model_state[hf_key].copy_(hf_param)
+                loaded += 1
+            else:
+                skipped_shape += 1
+        else:
+            skipped_missing += 1
+
+    del hf_model
+    print(f"   Loaded {loaded} weight tensors")
+    if skipped_shape:
+        print(f"   Skipped {skipped_shape} due to shape mismatch (vocab change)")
+    print("✅ Pretrained GPT-2 weights loaded! Do a short fine-tuning to adapt to your dataset.")
+
+
 parser = argparse.ArgumentParser(description="Run experiment")
 parser.add_argument("--out_dir", type=str, default="run_0", help="Output directory")
+parser.add_argument(
+    "--init_from", type=str, default="scratch", choices=["scratch", "pretrained"],
+    help="'scratch' trains from scratch (default). 'pretrained' loads GPT-2 weights and fine-tunes."
+)
+parser.add_argument(
+    "--datasets", type=str, default=None,
+    help="Comma-separated list of datasets (e.g., 'shakespeare_char'). Default: all datasets."
+)
 args = parser.parse_args()
 
 if __name__ == "__main__":
@@ -687,13 +753,17 @@ if __name__ == "__main__":
         "shakespeare_char": 2,
     }
 
+    # Determine which datasets to run
+    if args.datasets:
+        datasets_to_run = [d.strip() for d in args.datasets.split(",")]
+    else:
+        datasets_to_run = list(num_seeds.keys())
+
     out_dir = args.out_dir
     all_results = {}
     final_infos = {}
-    for dataset in num_seeds.keys():
-        final_info_list = []
-        for seed_offset in range(num_seeds[dataset]):
-            final_info, train_info, val_info = train(dataset, out_dir, seed_offset)
+    for dataset in datasets_to_run:
+            final_info, train_info, val_info = train(dataset, out_dir, seed_offset, init_from=args.init_from)
             all_results[f"{dataset}_{seed_offset}_final_info"] = final_info
             all_results[f"{dataset}_{seed_offset}_train_info"] = train_info
             all_results[f"{dataset}_{seed_offset}_val_info"] = val_info
