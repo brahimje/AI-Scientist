@@ -367,7 +367,7 @@ def train(dataset="shakespeare_char", out_dir="run_0", seed_offset=0, init_from=
     # DDP settings
     backend = "nccl"  # 'nccl', 'gloo', etc.
     # system
-    device = "cuda"  # Always use CUDA
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     dtype = (
         "bfloat16"
         if torch.cuda.is_available() and torch.cuda.is_bf16_supported()
