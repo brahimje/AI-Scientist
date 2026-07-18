@@ -27,7 +27,7 @@ You can then implement the next thing on your list."""
 
 
 # RUN EXPERIMENT
-def run_experiment(folder_name, run_num, timeout=7200):
+def run_experiment(folder_name, run_num, timeout=7200, init_from="scratch"):
     cwd = osp.abspath(folder_name)
     # COPY CODE SO WE CAN SEE IT.
     shutil.copy(
@@ -40,6 +40,7 @@ def run_experiment(folder_name, run_num, timeout=7200):
         "python",
         "experiment.py",
         f"--out_dir=run_{run_num}",
+        f"--init_from={init_from}",
     ]
     try:
         result = subprocess.run(
@@ -113,7 +114,7 @@ def run_plotting(folder_name, timeout=600):
 
 
 # PERFORM EXPERIMENTS
-def perform_experiments(idea, folder_name, coder, baseline_results) -> bool:
+def perform_experiments(idea, folder_name, coder, baseline_results, init_from="scratch") -> bool:
     ## RUN EXPERIMENT
     current_iter = 0
     run = 1
@@ -131,7 +132,7 @@ def perform_experiments(idea, folder_name, coder, baseline_results) -> bool:
         print(coder_out)
         if "ALL_COMPLETED" in coder_out:
             break
-        return_code, next_prompt = run_experiment(folder_name, run)
+        return_code, next_prompt = run_experiment(folder_name, run, init_from=init_from)
         if return_code == 0:
             run += 1
             current_iter = 0

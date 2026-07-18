@@ -731,7 +731,13 @@ def load_pretrained_weights(model, model_args, device):
     for hf_key, hf_param in hf_state.items():
         # Map HF key to NanoGPT key (they use the same naming convention)
         if hf_key in model_state:
-            if hf_param.shape == model_state[hf_key].shape:
+            # Handle position embeddings: GPT-2 has 1024, we may use fewer
+            if hf_key == "transformer.wpe.weight" and hf_param.shape[0] > model_state[hf_key].shape[0]:
+                # Slice to our block_size
+                n_pos = model_state[hf_key].shape[0]
+                model_state[hf_key].copy_(hf_param[:n_pos])
+                loaded += 1
+            elif hf_param.shape == model_state[hf_key].shape:
                 model_state[hf_key].copy_(hf_param)
                 loaded += 1
             else:

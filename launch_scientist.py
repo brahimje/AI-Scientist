@@ -89,6 +89,13 @@ def parse_arguments():
         choices=["semanticscholar", "openalex"],
         help="Scholar engine to use.",
     )
+    parser.add_argument(
+        "--init-from",
+        type=str,
+        default="scratch",
+        choices=["scratch", "pretrained"],
+        help="'scratch' trains from scratch. 'pretrained' loads GPT-2 weights and fine-tunes (much faster, ~10 min per run).",
+    )
     return parser.parse_args()
 
 
@@ -218,7 +225,7 @@ def do_idea(
         print_time()
         print(f"*Starting Experiments*")
         try:
-            success = perform_experiments(idea, folder_name, coder, baseline_results)
+            success = perform_experiments(idea, folder_name, coder, baseline_results, init_from=args.init_from)
         except Exception as e:
             print(f"Error during experiments: {e}")
             print(f"Experiments failed for idea {idea_name}")
